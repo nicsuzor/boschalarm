@@ -25,17 +25,14 @@ from boschalarm.codes import (
 TIMEOUT_SECONDS = 5
 
 
-def list_to_bit_array_int(indices, n=None):
+def list_to_bit_array_int(indices, bits=8):
     # Output an integer that is the representation of a binary array
     # with each bit in _indices_ switched on and the rest zero.
-    # e.g. list_to_bit_array_int([4,6], n=8) = int(01010000) = 80 = 0x50
-
-    if not n:
-        n = max(indices)
+    # e.g. [1] = int(10000000) = 128 = 0x80
 
     out = ""
 
-    for i in range(n):
+    for i in range(1, bits+1):
         out += "1" if i in indices else "0"
 
     return int(out, 2)
@@ -327,13 +324,13 @@ class Bosch:
         return self.request(BoschComands.REQUEST_AREAS_NOT_READY)
 
     def armAreas(self, arm_type: ArmingType, area_indices=None):
-        # Format: 01 LEN 0x27 BIT_ARRAY_FOR_AREAS
-        # e.g. 01 02 27 80
+        # Format: 01 LEN 0x27 ARMING_TYPE BIT_ARRAY_FOR_AREAS
+        # e.g. 01 02 27 01 80
         if area_indices:
-            data = list_to_bit_array_int(area_indices, n=4)
+            data = list_to_bit_array_int(area_indices)
         else:
             # appply to all configured areas
-            data = list_to_bit_array_int(self.configured_areas.keys(), 4)
+            data = list_to_bit_array_int(self.configured_areas.keys())
 
         data = hex(data, bytes=1)
 
