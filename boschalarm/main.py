@@ -12,7 +12,7 @@ import numpy as np
 from tlslite.api import *
 import ssl
 
-from boschalarm.codes import (
+from codes import (
     BoschComands,
     Languages,
     areaStatus,
@@ -73,7 +73,7 @@ class Bosch:
     ### The main methods are connect(), auth(), and send_receive()
     ### send_receive() expects a string of hex formatted bytes.
 
-    def __init__(self, ip, port=7700, logger=None):
+    def __init__(self, ip, port=7700, pin='2580', passcode='00000000', logger=None):
         if logger:
             self.logger = logger
         else:
@@ -91,17 +91,14 @@ class Bosch:
         self.numberOfKeypads = None
         self.numberOfDoors = None
         self.eventRecordSize = None
+        self.userNumber = -1
 
         try:
             self.connect()
         except ssl.SSLError as e:
             raise OSError(f'Could not connect to socket: {e}')
 
-        self.auth()
-        self.requestCapacities()
-        self.requestConfiguredAreas()
-        self.requestConfiguredPoints()
-        self.requestConfiguredOutputs()
+        self.auth(passcode, pin)
 
     @backoff.on_exception(backoff.expo, OSError, max_tries=5)
     def connect(self):
@@ -122,10 +119,18 @@ class Bosch:
     def close(self):
         self.ssock.close()
 
-    def auth(self):
+    def auth(self, passcode='0000000000', pin='2580'):
         self.whatareyou()
-        self.checkpass()
-        self.checkpin()
+        if self.checkpass(passcode) and self.checkpin(pin):
+            return True
+        else:
+            raise IOError('Invalid PIN for Bosch alarm system.')
+
+    def read_config(self):
+        self.requestCapacities()
+        self.requestConfiguredAreas()
+        self.requestConfiguredPoints()
+        self.requestConfiguredOutputs()
 
     def send_receive(self, data):
         self.send(data)
@@ -136,6 +141,10 @@ class Bosch:
             return None, None
 
     def send(self, data):
+        ### Add required prefixes and send data (hex bytes)
+        ### This method should always be used to send data. Protocol
+        ### requires data in the form 01 LEN DATA
+
         data = bytes.fromhex(data)
         length = len(data)
         length = bytes.fromhex(f"{length:0>2X}")
@@ -217,22 +226,37 @@ class Bosch:
 
     def checkpin(self, pin="2580"):
         data = "3E" + pin
-        return self.request(data)
+        response = self.request(data)
+        try:
+            self.userNumber = int(response[3:4], 16)
+            return True
+        except ValueError as e:
+            self.logger.info(f'Login unsuccessful.')
+            return False
 
     def requestCapacities(self):
         response = self.request(BoschComands.REQUEST_CAPACITIES)
 
-        maxAreas = int(response[5:6], 16) - 1
-        self.numberOfPoints = int(response[7:11], 16)
-        self.numberOfOutputs = int(response[11:15], 16)
-        self.numberOfUsers = int(response[16:19], 16)
-        self.numberOfKeypads = int(response[20:21], 16)
-        self.numberOfDoors = int(response[21:22], 16)
-        self.eventRecordSize = int(response[23:24], 16)
+        try:
+            maxAreas = int(response[5:6], 16) - 1
+            self.numberOfPoints = int(response[7:11], 16)
+            self.numberOfOutputs = int(response[11:15], 16)
+            self.numberOfUsers = int(response[16:19], 16)
+            self.numberOfKeypads = int(response[20:21], 16)
+            self.numberOfDoors = int(response[21:22], 16)
+            self.eventRecordSize = int(response[23:24], 16)
 
-        self.logger.info(
-            f"Areas: {maxAreas}; Points: {self.numberOfPoints}; Outputs: {self.numberOfOutputs}; Users: {self.numberOfUsers}; Keypads: {self.numberOfKeypads}; Doors: {self.numberOfDoors}; Event record size: {self.eventRecordSize}"
-        )
+            self.logger.info(
+                f"Areas: {maxAreas}; Points: {self.numberOfPoints}; Outputs: {self.numberOfOutputs}; Users: {self.numberOfUsers}; Keypads: {self.numberOfKeypads}; Doors: {self.numberOfDoors}; Event record size: {self.eventRecordSize}"
+            )
+        except ValueError as e:
+            self.logger.error(
+                f"Unable to get configuration information. Received: {response}.\n"
+                f"Points: {self.numberOfPoints}; Outputs: {self.numberOfOutputs}; "
+                f"Users: {self.numberOfUsers}; Keypads: {self.numberOfKeypads}; Doors: {self.numberOfDoors}; "
+                f"Event record size: {self.eventRecordSize}"
+            )
+
         return response
 
     def requestConfiguredPoints(self):
@@ -248,10 +272,14 @@ class Bosch:
 
     def requestConfiguredAreas(self):
         response = self.request(BoschComands.REQUEST_CONFIGURED_AREAS)
-        active = np.nonzero(bitArray(response, reverse=False))
-        active = [int(n + 1) for n in active]
-        names = [self.requestAreaText(n) for n in active]
-        self.configured_areas = dict(zip(active, names))
+        active = 0
+        try:
+            active = np.nonzero(bitArray(response, reverse=False))
+            active = [int(n + 1) for n in active]
+            names = [self.requestAreaText(n) for n in active]
+            self.configured_areas = dict(zip(active, names))
+        except ValueError:
+            self.logger.error(f'Unable to interpret configured areas: {response}.')
 
         self.logger.info(f"Configured areas: {self.configured_areas}")
         return active
@@ -323,16 +351,18 @@ class Bosch:
     def requestAreasNotReady(self):
         return self.request(BoschComands.REQUEST_AREAS_NOT_READY)
 
-    def armAreas(self, arm_type: ArmingType, area_indices=None):
+    def armAreas(self, arm_type: ArmingType, area_indices=None, area_hex=None):
         # Format: 01 LEN 0x27 ARMING_TYPE BIT_ARRAY_FOR_AREAS
         # e.g. 01 02 27 01 80
         if area_indices:
             data = list_to_bit_array_int(area_indices)
+            data = hex(data, bytes=1)
+        elif area_hex:
+            data = area_hex
         else:
             # appply to all configured areas
             data = list_to_bit_array_int(self.configured_areas.keys())
-
-        data = hex(data, bytes=1)
+            data = hex(data, bytes=1)
 
         data = BoschComands.ARM_AREAS + hex(arm_type.value, bytes=1) + data
 

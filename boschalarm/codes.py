@@ -78,6 +78,7 @@ class ArmingType(IntEnum):
     ForcePartOnDelay = 8
     ForcePartOnInstant = 9
     StayOneArm = 10
+    StayTwoArm = 11
     AwayArm = 12
     ForceStayOneArm = 13
     ForceAwayArm = 15

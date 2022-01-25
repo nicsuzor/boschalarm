@@ -14,6 +14,8 @@ def main():
 
     Usage:
       cli.py [-v] --ip IP [--port PORT]
+      cli.py [-v] --ip IP [--port PORT] (send | request) <data>
+      cli.py [-v] --ip IP [--port PORT] (arm | disarm) <area_hex>
 
     Options:
         -h --help       Show this screen.
@@ -30,12 +32,17 @@ def main():
         logging.basicConfig(level=logging.INFO)
 
     # Connnect to the unit
-    b = Bosch(args['--ip'], args['--port'])
+    b = Bosch(args['--ip'], args['--port'], pin='2323')
 
-    # Pin check works
-    b.checkpin()
+    if args['send']:
+        result = b.action_command(args['<data>'])
+        sys.exit(0)
+    elif args['request']:
+        result = b.request(args['<data>'])
+        sys.exit(0)
 
     # Arming seems to raise an authorisation error
+    b.armAreas(ArmingType.StayOneArm)
     b.armAreas(ArmingType.Disarm)
 
     b.requestAlarmDetail(AlarmTypes.BurglaryTrouble.value)
