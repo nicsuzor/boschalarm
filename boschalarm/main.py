@@ -12,7 +12,7 @@ import numpy as np
 from tlslite.api import *
 import ssl
 
-from codes import (
+from .codes import (
     BoschComands,
     Languages,
     areaStatus,
