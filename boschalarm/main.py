@@ -49,7 +49,7 @@ def bitArray(n, reverse=False):
             return bit_list
 
     except TypeError as e:
-        getLogger().error('Unable to convert "{n}" to bit array: {e}.')
+        getLogger(__name__).error('Unable to convert "{n}" to bit array: {e}.')
         return None
 
 
@@ -215,10 +215,10 @@ class Bosch:
         response = self.request(BoschComands.WHATAREYOU)
         response = bytes.fromhex(response)
         self.logger.info(f"Product id: {response[0]}")
-        self.logger.info(f"RPS Protocol version: {[r for r in response[1:4]]}")
-        self.logger.info(f"Automation Protocol version: {[r for r in response[5:8]]}")
-        self.logger.info(f"Execute Protocol version: {[r for r in response[9:12]]}")
-        self.logger.info(f"Busy: {response[13]}")
+        self.logger.debug(f"RPS Protocol version: {[r for r in response[1:4]]}")
+        self.logger.debug(f"Automation Protocol version: {[r for r in response[5:8]]}")
+        self.logger.debug(f"Execute Protocol version: {[r for r in response[9:12]]}")
+        self.logger.debug(f"Busy: {response[13]}")
 
     def checkpass(self, passcode="0000000000"):
         data = "0600" + passcode + "00"
@@ -246,7 +246,7 @@ class Bosch:
             self.numberOfDoors = int(response[21:22], 16)
             self.eventRecordSize = int(response[23:24], 16)
 
-            self.logger.info(
+            self.logger.debug(
                 f"Areas: {maxAreas}; Points: {self.numberOfPoints}; Outputs: {self.numberOfOutputs}; Users: {self.numberOfUsers}; Keypads: {self.numberOfKeypads}; Doors: {self.numberOfDoors}; Event record size: {self.eventRecordSize}"
             )
         except ValueError as e:
@@ -267,7 +267,7 @@ class Bosch:
 
         self.configured_points = dict(zip(active, names))
 
-        self.logger.info(f"Configured points: {self.configured_points}")
+        self.logger.debug(f"Configured points: {self.configured_points}")
         return active
 
     def requestConfiguredAreas(self):
@@ -281,7 +281,7 @@ class Bosch:
         except ValueError:
             self.logger.error(f'Unable to interpret configured areas: {response}.')
 
-        self.logger.info(f"Configured areas: {self.configured_areas}")
+        self.logger.debug(f"Configured areas: {self.configured_areas}")
         return active
 
     def requestAreaText(self, area):
@@ -314,7 +314,7 @@ class Bosch:
             state = status == "1"
             z = dict(index=i, state=state)
             zones.append(z)
-        self.logger.info(f"All points: {response}: {zones}")
+        self.logger.debug(f"All points: {response}: {zones}")
 
         return zones
 
@@ -327,7 +327,7 @@ class Bosch:
             arming_state = areaStatus(response[5]).name
             alarm_mask = "{:08b}".format(int(response[3:4].hex(), 16))
             status = dict(state=arming_state, alarm_mask=alarm_mask)
-            self.logger.info(
+            self.logger.debug(
                 f"Area {area_number} state: {arming_state}, alarms: {alarm_mask}"
             )
         except (TypeError, KeyError, IndexError) as e:
@@ -344,7 +344,7 @@ class Bosch:
     def requestFaultedPoints(self):
         zones = self.requestAllPoints()
         zones = [z for z in zones if z["state"]]
-        self.logger.info(f"Faulted points: {zones}")
+        self.logger.debug(f"Faulted points: {zones}")
 
         return zones
 
@@ -400,7 +400,7 @@ class Bosch:
         names = [self.requestOutputText(n) for n in active]
         self.configured_outputs = dict(zip(active, names))
 
-        self.logger.info(f"Configured outputs: {active}")
+        self.logger.debug(f"Configured outputs: {active}")
         return active
 
     def requestConfiguredDoors(self):
@@ -413,7 +413,7 @@ class Bosch:
         response = bitArray(response, reverse=True)
 
         for o in self.configured_outputs:
-            self.logger.info(f"Output {o.value} state: {response[o]}")
+            self.logger.debug(f"Output {o.value} state: {response[o]}")
 
         return np.nonzero(response)
 
@@ -457,7 +457,7 @@ class Bosch:
 
             status.append(state)
 
-        self.logger.info(f"Status update: {status}")
+        self.logger.debug(f"Status update: {status}")
         return status
 
     def requestSubscriptions(self):
