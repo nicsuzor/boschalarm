@@ -117,6 +117,7 @@ class Bosch:
         self.close()
 
     def close(self):
+        self.ssock.shutdown()
         self.ssock.close()
 
     def auth(self, passcode='0000000000', pin='2580'):
