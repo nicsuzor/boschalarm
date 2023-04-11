@@ -96,7 +96,7 @@ class Bosch:
         try:
             self.connect()
         except ssl.SSLError as e:
-            raise OSError(f'Could not connect to socket: {e}')
+            raise OSError(f'Could not connect to socket: {e}') from e
 
         self.auth(passcode, pin)
 
@@ -106,7 +106,8 @@ class Bosch:
         # All should be inherited from OSError: https://www.python.org/dev/peps/pep-3151/
 
         sock = socket.create_connection((self.ip, self.port))
-        context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
+        context = ssl._create_unverified_context(protocol=ssl.PROTOCOL_TLSv1_2)
+        #context.set_ciphers('ECDHE-RSA-AES128-GCM-SHA256:TLS-RSA-AES128-GCM-SHA256:DHE-RSA-AES128-GCM-SHA256')
         self.ssock = context.wrap_socket(sock)
         self.ssock.setblocking(False)
 
@@ -138,7 +139,8 @@ class Bosch:
         try:
             return self.receive()
         except TimeoutError:
-            self.logger.error(f"Timeout reading from stream...")
+            self.logger.error(f"Timeout reading from stream. Reconnecting...")
+            self.connect()
             return None, None
 
     def send(self, data):
@@ -333,7 +335,7 @@ class Bosch:
             )
         except (TypeError, KeyError, IndexError) as e:
             self.logger.error(
-                f"Unable to decode area status: {response}, {[w for w in response]}.\n{e}"
+                f"Unable to decode area status: {response}.\n{e}"
             )
             return None
         except ValueError as e:
@@ -453,7 +455,9 @@ class Bosch:
         status = []
         for i in self.configured_areas.keys():
             state = dict(area=self.configured_areas[i])
-            state.update(self.requestAreaStatus(i))
+            area_status = self.requestAreaStatus(i)
+            if area_status:
+                state.update(area_status)
             state.update(alarms=self.RequestAlarmAreasByPriority(i))
 
             status.append(state)
