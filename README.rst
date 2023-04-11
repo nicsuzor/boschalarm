@@ -32,6 +32,11 @@ Features
 
 * TODO
 
+
+Bugs
+----
+The **connection to the alarm is insecure**. The Bosch certificate expired in 2022 and needs a firmware update. The alarm also does not speak modern TLS; this package relies on you running an older version of python with an older version of openssl that still has support for SSLv2. BEWARE.
+
 Credits
 -------
 
