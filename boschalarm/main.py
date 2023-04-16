@@ -81,6 +81,7 @@ class Bosch:
         self.ip = ip
         self.port = port
         self.ssock = None
+        self._is_connected = False
 
         self.configured_points = None
         self.configured_areas = None
@@ -92,13 +93,14 @@ class Bosch:
         self.numberOfDoors = None
         self.eventRecordSize = None
         self.userNumber = -1
+        self.passcode = passcode
+        self.pin = pin
 
         try:
             self.connect()
         except ssl.SSLError as e:
             raise OSError(f'Could not connect to socket: {e}') from e
 
-        self.auth(passcode, pin)
 
     @backoff.on_exception(backoff.expo, OSError, max_tries=5)
     def connect(self):
@@ -111,6 +113,8 @@ class Bosch:
         self.ssock = context.wrap_socket(sock)
         self.ssock.setblocking(False)
 
+        self.auth()
+
     def __enter__(self):
         pass
 
@@ -118,12 +122,14 @@ class Bosch:
         self.close()
 
     def close(self):
+        self._is_connected = False
         self.ssock.shutdown()
         self.ssock.close()
 
-    def auth(self, passcode='0000000000', pin='2580'):
+    def auth(self):
         self.whatareyou()
-        if self.checkpass(passcode) and self.checkpin(pin):
+        if self.checkpass(self.passcode) and self.checkpin(self.pin):
+            self._is_connected = True
             return True
         else:
             raise IOError('Invalid PIN for Bosch alarm system.')
@@ -136,12 +142,7 @@ class Bosch:
 
     def send_receive(self, data):
         self.send(data)
-        try:
-            return self.receive()
-        except TimeoutError:
-            self.logger.error(f"Timeout reading from stream. Reconnecting...")
-            self.connect()
-            return None, None
+        return self.receive()
 
     def send(self, data):
         ### Add required prefixes and send data (hex bytes)
@@ -203,10 +204,12 @@ class Bosch:
 
             except (ConnectionError, ssl.SSLError) as e:
                 self.logger.error(f"Unable to read from stream: {e}")
+                self._is_connected = False
                 return None, None
         else:
             self.logger.error(f"Timeout waiting for response.")
-            return None, None
+            self._is_connected = False
+            raise TimeoutError
 
     def panelState(self):
         return self.request(BoschComands.PANEL_STATE)
@@ -453,17 +456,19 @@ class Bosch:
 
     def getStatus(self):
         status = []
-        for i in self.configured_areas.keys():
-            state = dict(area=self.configured_areas[i])
-            area_status = self.requestAreaStatus(i)
-            if area_status:
-                state.update(area_status)
-            state.update(alarms=self.RequestAlarmAreasByPriority(i))
-
-            status.append(state)
+        for k, v in self.configured_areas.items():
+            status.append(self.getStatusArea(area=k, name=v))
 
         self.logger.debug(f"Status update: {status}")
         return status
+
+    def getStatusArea(self, area, name):
+        state = dict(area=name)
+        area_status = self.requestAreaStatus(area)
+        if area_status:
+            state.update(area_status)
+        state.update(alarms=self.RequestAlarmAreasByPriority(area))
+        return state
 
     def requestSubscriptions(self):
         return self.request(BoschComands.REQUEST_SUBSCRIPTIONS)
