@@ -41,7 +41,7 @@ class BoschComands():
     REQUEST_ALARM_AREAS = '22'
     GET_ALARM_MEMORY = '23'
     REQUEST_CONFIGURED_AREAS = '24'
-    REQUEST_AREA_STATUS = '26'  # 01'  # second byte is to request alarm reports if supported?
+    REQUEST_AREA_STATUS = '2600'  # 01'  # second byte is to request alarm reports if supported?
     ARM_AREAS = '27'
     REQUEST_AREAS_NOT_READY = '28'
     REQUEST_AREA_TEXT = '29'

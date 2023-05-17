@@ -240,6 +240,12 @@ class Bosch:
             self.logger.info(f'Login unsuccessful.')
             return False
 
+    def checkStillResponding(self):
+        try:
+            self.requestCapacities()
+        except Exception as e:
+            raise IOError(f'Unable to communicate with alarm.')
+
     def requestCapacities(self):
         response = self.request(BoschComands.REQUEST_CAPACITIES)
 
@@ -286,6 +292,7 @@ class Bosch:
             self.configured_areas = dict(zip(active, names))
         except ValueError:
             self.logger.error(f'Unable to interpret configured areas: {response}.')
+            self.checkStillResponding()
 
         self.logger.debug(f"Configured areas: {self.configured_areas}")
         return active
@@ -338,11 +345,13 @@ class Bosch:
             )
         except (TypeError, KeyError, IndexError) as e:
             self.logger.error(
-                f"Unable to decode area status: {response}.\n{e}"
+                f"Unable to decode area status: {response}. {e}"
             )
+            self.checkStillResponding()
             return None
         except ValueError as e:
             self.logger.error(f"Unable to decode area status: {response}.\n{e}")
+            self.checkStillResponding()
             return None
 
         return status
@@ -447,6 +456,7 @@ class Bosch:
             self.logger.error(
                 f"Unable to translate response code into ActionResults: {response}."
             )
+            self.checkStillResponding()
 
         caller = inspect.currentframe().f_back.f_code.co_name
         self.logger.debug(
