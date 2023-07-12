@@ -242,9 +242,10 @@ class Bosch:
 
     def checkStillResponding(self):
         try:
-            self.requestCapacities()
+            response = self.requestCapacities()
+            self.logger.info(f'Trying to check whether alarm is still responsive. Received response: {response}')
         except Exception as e:
-            raise IOError(f'Unable to communicate with alarm.')
+            raise IOError(f'Trying to check whether alarm is still responsive. Unable to communicate with alarm.')
 
     def requestCapacities(self):
         response = self.request(BoschComands.REQUEST_CAPACITIES)
@@ -262,11 +263,8 @@ class Bosch:
                 f"Areas: {maxAreas}; Points: {self.numberOfPoints}; Outputs: {self.numberOfOutputs}; Users: {self.numberOfUsers}; Keypads: {self.numberOfKeypads}; Doors: {self.numberOfDoors}; Event record size: {self.eventRecordSize}"
             )
         except ValueError as e:
-            self.logger.error(
-                f"Unable to get configuration information. Received: {response}.\n"
-                f"Points: {self.numberOfPoints}; Outputs: {self.numberOfOutputs}; "
-                f"Users: {self.numberOfUsers}; Keypads: {self.numberOfKeypads}; Doors: {self.numberOfDoors}; "
-                f"Event record size: {self.eventRecordSize}"
+            raise IOError(
+                f"Unable to get configuration information for alarm. Received: {response}."
             )
 
         return response
@@ -343,13 +341,7 @@ class Bosch:
             self.logger.debug(
                 f"Area {area_number} state: {arming_state}, alarms: {alarm_mask}"
             )
-        except (TypeError, KeyError, IndexError) as e:
-            self.logger.error(
-                f"Unable to decode area status: {response}. {e}"
-            )
-            self.checkStillResponding()
-            return None
-        except ValueError as e:
+        except (TypeError, KeyError, IndexError, ValueError) as e:
             self.logger.error(f"Unable to decode area status: {response}.\n{e}")
             self.checkStillResponding()
             return None
