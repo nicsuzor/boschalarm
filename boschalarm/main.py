@@ -140,7 +140,7 @@ class Bosch:
         self.requestConfiguredPoints()
         self.requestConfiguredOutputs()
 
-    def send_receive(self, data):
+    def send_receive(self, data) -> [bool, bytes]:
         self.send(data)
         return self.receive()
 
@@ -157,7 +157,7 @@ class Bosch:
         to_send = start + length + data
         self.ssock.send(to_send)
 
-    def receive(self):
+    def receive(self) -> [bool, bytes]:
         ## Format is:
         ## REPLY_TYPE LENGTH_BYTE RESPONSE_TYPE SUCCESS DATA
         ## e.g.: 01 04 ff 0a0b0c0d
@@ -176,7 +176,7 @@ class Bosch:
 
                 if n <= 0:
                     self.logger.error(f"Empty response received: {data}")
-                    return None, None
+                    return False, None
 
                 try:
                     response_type = ResponseTypes(data[2]).name
@@ -204,11 +204,11 @@ class Bosch:
 
             except (ConnectionError, ssl.SSLError) as e:
                 self.logger.error(f"Unable to read from stream: {e}")
-                self._is_connected = False
-                return None, None
+                self.close()
+                return False, None
         else:
             self.logger.error(f"Timeout waiting for response.")
-            self._is_connected = False
+            self.close()
             raise TimeoutError
 
     def panelState(self):
@@ -241,11 +241,9 @@ class Bosch:
             return False
 
     def checkStillResponding(self):
-        try:
-            response = self.requestCapacities()
-            self.logger.info(f'Trying to check whether alarm is still responsive. Received response: {response}')
-        except Exception as e:
-            raise IOError(f'Trying to check whether alarm is still responsive. Unable to communicate with alarm.')
+        response = self.requestCapacities()
+        self.logger.info(f'Trying to check whether alarm is still responsive. Received response: {response}')
+        return True
 
     def requestCapacities(self):
         response = self.request(BoschComands.REQUEST_CAPACITIES)
@@ -289,8 +287,7 @@ class Bosch:
             names = [self.requestAreaText(n) for n in active]
             self.configured_areas = dict(zip(active, names))
         except ValueError:
-            self.logger.error(f'Unable to interpret configured areas: {response}.')
-            self.checkStillResponding()
+            raise IOError(f'Unable to interpret configured areas: {response}.')
 
         self.logger.debug(f"Configured areas: {self.configured_areas}")
         return active
@@ -317,8 +314,7 @@ class Bosch:
         try:
             binary_response = bin(int(response, 16))[2:].zfill(end_length)
         except (ValueError, TypeError):
-            self.logger.error(f"Unable to update points. Response: {response}.")
-            return None
+            raise IOError(f"Unable to update points. Response: {response}.")
 
         zones = []
         for i, status in enumerate(binary_response):
@@ -341,12 +337,10 @@ class Bosch:
             self.logger.debug(
                 f"Area {area_number} state: {arming_state}, alarms: {alarm_mask}"
             )
+            return status
         except (TypeError, KeyError, IndexError, ValueError) as e:
-            self.logger.error(f"Unable to decode area status: {response}.\n{e}")
-            self.checkStillResponding()
-            return None
+            raise IOError(f"Unable to decode area status: {response}.\n{e}")
 
-        return status
 
     def requestFaultedPoints(self):
         zones = self.requestAllPoints()
@@ -438,6 +432,8 @@ class Bosch:
         self.logger.debug(
             f"{caller} sent: {data}. Success: {result}. Received: {response}."
         )
+        if not result or not response:
+            raise IOError(f'Unable to get response from panel. {caller} sent: {data}. Success: {result}. Received: {response}.')
         return response
 
     def action_command(self, data):
