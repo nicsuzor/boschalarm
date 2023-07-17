@@ -103,9 +103,15 @@ class Bosch:
 
 
     @backoff.on_exception(backoff.expo, OSError, max_tries=5)
-    def connect(self):
+    def connect(self) -> bool:
         # retry on SSL errors and other connection errors
         # All should be inherited from OSError: https://www.python.org/dev/peps/pep-3151/
+        
+        if self._is_connected:
+            self.logger.debug(f'Disconnecting from alarm.')
+            self.close()
+            
+        self.logger.debug(f'Trying to connect to alarm.')
 
         sock = socket.create_connection((self.ip, self.port))
         context = ssl._create_unverified_context(protocol=ssl.PROTOCOL_TLSv1_2)
@@ -113,7 +119,7 @@ class Bosch:
         self.ssock = context.wrap_socket(sock)
         self.ssock.setblocking(False)
 
-        self.auth()
+        return self.auth()
 
     def __enter__(self):
         pass
@@ -123,13 +129,14 @@ class Bosch:
 
     def close(self):
         self._is_connected = False
-        self.ssock.shutdown()
+        #self.ssock.shutdown()
         self.ssock.close()
 
-    def auth(self):
+    def auth(self) -> bool:
         self.whatareyou()
         if self.checkpass(self.passcode) and self.checkpin(self.pin):
             self._is_connected = True
+            self.logger.debug('Authenticated successfully to Bosch alarm system.')
             return True
         else:
             raise IOError('Invalid PIN for Bosch alarm system.')
@@ -141,10 +148,15 @@ class Bosch:
         self.requestConfiguredOutputs()
 
     def send_receive(self, data) -> [bool, bytes]:
-        self.send(data)
-        return self.receive()
+        try:
+            self._send(data)
+            return self._receive()
+        except (ConnectionError, ssl.SSLError, IOError) as e:
+            # IOError 9 Bad file descriptor is raised when the socket is closed and the client tries to write / receive
+            self.close()
+            raise ConnectionError(e)
 
-    def send(self, data):
+    def _send(self, data):
         ### Add required prefixes and send data (hex bytes)
         ### This method should always be used to send data. Protocol
         ### requires data in the form 01 LEN DATA
@@ -157,7 +169,7 @@ class Bosch:
         to_send = start + length + data
         self.ssock.send(to_send)
 
-    def receive(self) -> [bool, bytes]:
+    def _receive(self) -> [bool, bytes]:
         ## Format is:
         ## REPLY_TYPE LENGTH_BYTE RESPONSE_TYPE SUCCESS DATA
         ## e.g.: 01 04 ff 0a0b0c0d
@@ -165,47 +177,42 @@ class Bosch:
         self.ssock.setblocking(0)
         ready = select.select([self.ssock], [], [], TIMEOUT_SECONDS)
         if ready[0]:
-            try:
-                data = self.ssock.recv(4096)
-                n = data[1]  # length of data excluding header info
+            data = self.ssock.recv(4096)
+            n = data[1]  # length of data excluding header info
 
-                if len(data) != n + 2:
-                    self.logger.error(
-                        f"Received incorrect data from socket. Expected {n+2} bytes, received: {data}."
-                    )
+            if len(data) != n + 2:
+                self.logger.error(
+                    f"Received incorrect data from socket. Expected {n+2} bytes, received: {data}."
+                )
 
-                if n <= 0:
-                    self.logger.error(f"Empty response received: {data}")
-                    return False, None
-
-                try:
-                    response_type = ResponseTypes(data[2]).name
-                except (ValueError, TypeError):
-                    self.logger.error(
-                        f"Unable to translate response code into ResponseTypes: {data}."
-                    )
-                    response_type = None
-
-                if response_type == ResponseTypes.Ack:
-                    return True, None
-                elif response_type == ResponseTypes.Nak:
-                    return False, None
-
-                # Otherwise, process data
-                response = data[3:]  # main body of data received, after length byte
-                if response[0] >= 65 and response[0] <= 122:  # ascii character
-                    response = "".join(
-                        [chr(int(r)) for r in response[:-1]]
-                    )  # ignore last byte, which should be \x00
-                else:
-                    response = response.hex()
-
-                return True, response
-
-            except (ConnectionError, ssl.SSLError) as e:
-                self.logger.error(f"Unable to read from stream: {e}")
-                self.close()
+            if n <= 0:
+                self.logger.error(f"Empty response received: {data}")
                 return False, None
+
+            try:
+                response_type = ResponseTypes(data[2]).name
+            except (ValueError, TypeError):
+                self.logger.error(
+                    f"Unable to translate response code into ResponseTypes: {data}."
+                )
+                response_type = None
+
+            if response_type == ResponseTypes.Ack:
+                return True, None
+            elif response_type == ResponseTypes.Nak:
+                return False, None
+
+            # Otherwise, process data
+            response = data[3:]  # main body of data received, after length byte
+            if response[0] >= 65 and response[0] <= 122:  # ascii character
+                response = "".join(
+                    [chr(int(r)) for r in response[:-1]]
+                )  # ignore last byte, which should be \x00
+            else:
+                response = response.hex()
+
+            return True, response
+            
         else:
             self.logger.error(f"Timeout waiting for response.")
             self.close()
@@ -220,7 +227,7 @@ class Bosch:
     def whatareyou(self):
         response = self.request(BoschComands.WHATAREYOU)
         response = bytes.fromhex(response)
-        self.logger.info(f"Product id: {response[0]}")
+        self.logger.debug(f"Product id: {response[0]}")
         self.logger.debug(f"RPS Protocol version: {[r for r in response[1:4]]}")
         self.logger.debug(f"Automation Protocol version: {[r for r in response[5:8]]}")
         self.logger.debug(f"Execute Protocol version: {[r for r in response[9:12]]}")
@@ -241,8 +248,15 @@ class Bosch:
             return False
 
     def checkStillResponding(self):
-        response = self.requestCapacities()
-        self.logger.info(f'Trying to check whether alarm is still responsive. Received response: {response}')
+        self.logger.debug(f'Trying to check whether alarm is still responsive.')
+        try: 
+            response = self.requestCapacities()
+            self.logger.info(f'Alarm is still responsive. Received response: {response}')
+        except ConnectionError as e:
+            self.logger.error(f'Alarm is not responsive. Reconnecting.')
+            self.close()
+            return self.connect()
+            
         return True
 
     def requestCapacities(self):
@@ -325,7 +339,7 @@ class Bosch:
 
         return zones
 
-    def requestAreaStatus(self, area):
+    def requestAreaStatus(self, area) -> dict:
         response = self.request(BoschComands.REQUEST_AREA_STATUS + hex(area, 4))
 
         try:
@@ -339,7 +353,8 @@ class Bosch:
             )
             return status
         except (TypeError, KeyError, IndexError, ValueError) as e:
-            raise IOError(f"Unable to decode area status: {response}.\n{e}")
+            self.logger.error(f"Unable to decode area status: {response}.\n{e}")
+            return dict(state='ERROR')
 
 
     def requestFaultedPoints(self):
