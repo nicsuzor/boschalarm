@@ -1,16 +1,20 @@
 """Main module."""
+import asyncio
 import inspect
 import logging
 import select
 import sys
 import time
+from typing import Tuple
 import backoff
 from logging import getLogger
 from socket import *
+from errors import BoschFatalError
 
 import numpy as np
 from tlslite.api import *
 import ssl
+
 
 from .codes import (
     BoschComands,
@@ -73,11 +77,13 @@ class Bosch:
     ### The main methods are connect(), auth(), and send_receive()
     ### send_receive() expects a string of hex formatted bytes.
 
-    def __init__(self, ip, port=7700, pin='2580', passcode='00000000', logger=None):
+    def __init__(self, ip, port=7700, pin='2580', passcode='00000000', logger=None, verbose=True):
         if logger:
             self.logger = logger
         else:
             self.logger = getLogger(__name__)
+            if verbose:
+                self.logger.setLevel(logging.DEBUG)
         self.ip = ip
         self.port = port
         self.ssock = None
@@ -95,21 +101,23 @@ class Bosch:
         self.userNumber = -1
         self.passcode = passcode
         self.pin = pin
+        self.eventLoop = asyncio.get_event_loop()
+        self.eventLoop.create_task(self.keep_alive())
 
-        try:
-            self.connect()
-        except ssl.SSLError as e:
-            raise OSError(f'Could not connect to socket: {e}') from e
+    async def keep_alive(self):
+        while True:
+            if not self._is_connected:
+                if not self.connect():
+                    raise BoschFatalError(f'Unable to connect to alarm. Aborting.')
+                self._is_connected = True
+            await asyncio.sleep(1)
 
 
-    @backoff.on_exception(backoff.expo, OSError, max_tries=5)
+    @backoff.on_exception(backoff.expo, OSError, max_tries=3)
     def connect(self) -> bool:
         # retry on SSL errors and other connection errors
         # All should be inherited from OSError: https://www.python.org/dev/peps/pep-3151/
-        
-        if self._is_connected:
-            self.logger.debug(f'Disconnecting from alarm.')
-            self.close()
+        self.close()
             
         self.logger.debug(f'Trying to connect to alarm.')
 
@@ -118,9 +126,13 @@ class Bosch:
         #context.set_ciphers('ECDHE-RSA-AES128-GCM-SHA256:TLS-RSA-AES128-GCM-SHA256:DHE-RSA-AES128-GCM-SHA256')
         self.ssock = context.wrap_socket(sock)
         self.ssock.setblocking(False)
-
-        return self.auth()
-
+        
+        # check alarm responds
+        if self.checkResponse():
+            return self.auth()
+        else:
+            raise ConnectionError(f'Unable to connect to alarm at {self.ip}:{self.port}.')
+        
     def __enter__(self):
         pass
 
@@ -128,18 +140,21 @@ class Bosch:
         self.close()
 
     def close(self):
+        self.logger.debug(f'Disconnecting from alarm.')
         self._is_connected = False
-        #self.ssock.shutdown()
-        self.ssock.close()
+        if self.ssock and not self.ssock._closed:
+            self.ssock.shutdown(how=SHUT_RDWR)
+            self.ssock.close()
+        time.sleep(1)
 
     def auth(self) -> bool:
-        self.whatareyou()
         if self.checkpass(self.passcode) and self.checkpin(self.pin):
             self._is_connected = True
             self.logger.debug('Authenticated successfully to Bosch alarm system.')
             return True
         else:
-            raise IOError('Invalid PIN for Bosch alarm system.')
+            self.logger.error('Invalid PIN for Bosch alarm system.')
+            return False
 
     def read_config(self):
         self.requestCapacities()
@@ -147,16 +162,28 @@ class Bosch:
         self.requestConfiguredPoints()
         self.requestConfiguredOutputs()
 
-    def send_receive(self, data) -> [bool, bytes]:
+
+    #@backoff.on_exception(backoff.expo, OSError, max_tries=3)
+    def send_receive_reconnect(self, data) -> Tuple[bool, bytes]:
+        # retry on SSL errors and other connection errors
+        # All should be inherited from OSError: https://www.python.org/dev/peps/pep-3151/
         try:
-            self._send(data)
-            return self._receive()
+            return self.send_receive(data)
+        except (ConnectionError, ssl.SSLError, IOError) as e:
+            self.logger.error(f'Got error trying to send/receive data: {e}')
+            raise e
+    
+    def send_receive(self, data) -> Tuple[bool, bytes]:
+        try:
+            self.eventLoop.run_until_complete(self._send(data))
+            return self.eventLoop.run_until_complete(self._receive())
         except (ConnectionError, ssl.SSLError, IOError) as e:
             # IOError 9 Bad file descriptor is raised when the socket is closed and the client tries to write / receive
+            # raise the error as a generic ConnectionError and deal with it in the client
             self.close()
             raise ConnectionError(e)
 
-    def _send(self, data):
+    async def _send(self, data):
         ### Add required prefixes and send data (hex bytes)
         ### This method should always be used to send data. Protocol
         ### requires data in the form 01 LEN DATA
@@ -169,25 +196,25 @@ class Bosch:
         to_send = start + length + data
         self.ssock.send(to_send)
 
-    def _receive(self) -> [bool, bytes]:
+    async def _receive(self) -> [bool, bytes]:
         ## Format is:
         ## REPLY_TYPE LENGTH_BYTE RESPONSE_TYPE SUCCESS DATA
         ## e.g.: 01 04 ff 0a0b0c0d
-
+        
         self.ssock.setblocking(0)
         ready = select.select([self.ssock], [], [], TIMEOUT_SECONDS)
         if ready[0]:
             data = self.ssock.recv(4096)
+            if not data:
+                raise ConnectionError(f'No or incorrect data received from socket.')
+            
             n = data[1]  # length of data excluding header info
 
             if len(data) != n + 2:
-                self.logger.error(
-                    f"Received incorrect data from socket. Expected {n+2} bytes, received: {data}."
-                )
+                raise ConnectionError(f"Received incorrect data from socket. Expected {n+2} bytes, received: {data}.")
 
             if n <= 0:
-                self.logger.error(f"Empty response received: {data}")
-                return False, None
+                raise ConnectionError(f"Empty response received from socket. Expected {n+2} bytes, received: {data}.")
 
             try:
                 response_type = ResponseTypes(data[2]).name
@@ -227,11 +254,10 @@ class Bosch:
     def whatareyou(self):
         response = self.request(BoschComands.WHATAREYOU)
         response = bytes.fromhex(response)
-        self.logger.debug(f"Product id: {response[0]}")
-        self.logger.debug(f"RPS Protocol version: {[r for r in response[1:4]]}")
-        self.logger.debug(f"Automation Protocol version: {[r for r in response[5:8]]}")
-        self.logger.debug(f"Execute Protocol version: {[r for r in response[9:12]]}")
-        self.logger.debug(f"Busy: {response[13]}")
+        
+        alarm_info = dict(product_id=response[0], rps=[r for r in response[1:4]], automation=[r for r in response[5:8]], execute=[r for r in response[9:12]], busy=response[13])
+        self.logger.debug(f"Product id: {alarm_info['product_id']}, RPS: {alarm_info['rps']}, Automation: {alarm_info['automation']}, Execute: {alarm_info['execute']}, Busy: {alarm_info['busy']}")
+        return alarm_info
 
     def checkpass(self, passcode="0000000000"):
         data = "0600" + passcode + "00"
@@ -247,15 +273,15 @@ class Bosch:
             self.logger.info(f'Login unsuccessful.')
             return False
 
-    def checkStillResponding(self):
-        self.logger.debug(f'Trying to check whether alarm is still responsive.')
-        try: 
-            response = self.requestCapacities()
-            self.logger.info(f'Alarm is still responsive. Received response: {response}')
+    def checkResponse(self):
+        self.logger.debug(f'Trying to check whether alarm is responsive.')
+        try:
+            response = self.whatareyou() 
+            self.logger.info(f'Alarm is responding. Version info: {response}')
         except ConnectionError as e:
-            self.logger.error(f'Alarm is not responsive. Reconnecting.')
+            self.logger.error(f'Alarm is not responsive. Disconnecting.')
             self.close()
-            return self.connect()
+            return False
             
         return True
 
@@ -442,7 +468,7 @@ class Bosch:
         return self.request(data)
 
     def request(self, data):
-        result, response = self.send_receive(data)
+        result, response = self.send_receive_reconnect(data)
         caller = inspect.currentframe().f_back.f_code.co_name
         self.logger.debug(
             f"{caller} sent: {data}. Success: {result}. Received: {response}."
@@ -452,14 +478,13 @@ class Bosch:
         return response
 
     def action_command(self, data):
-        result, response = self.send_receive(data)
+        result, response = self.send_receive_reconnect(data)
         try:
             response = ActionResults(int(response)).name
         except (ValueError, TypeError, KeyError):
             self.logger.error(
                 f"Unable to translate response code into ActionResults: {response}."
             )
-            self.checkStillResponding()
 
         caller = inspect.currentframe().f_back.f_code.co_name
         self.logger.debug(

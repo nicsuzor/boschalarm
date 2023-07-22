@@ -1,0 +1,2 @@
+class BoschFatalError(Exception):
+    pass
