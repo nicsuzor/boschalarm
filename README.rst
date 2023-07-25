@@ -24,7 +24,6 @@ A python API to connect to Bosch Solution 2000/3000 alarm systems over local tcp
 
 
 * Free software: GNU General Public License v3
-* Documentation: https://boschalarm.readthedocs.io.
 
 
 Features
