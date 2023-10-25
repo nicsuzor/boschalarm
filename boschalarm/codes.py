@@ -14,16 +14,16 @@ responses = {
 
 
 class areaStatus(IntEnum):
-    Unknown = 0
-    AllOn = 1
-    PartOnInstant = 2
-    PartOnDelay = 3
-    Disarmed = 4
-    AllOnEntryDelay = 5
-    PartOnEntryDelay = 6
-    AllOnExitDelay = 7
-    PartOnExitDelay = 8
-    AllOnInstantArmed = 9
+    unknown = 0
+    allon = 1
+    partoninstant = 2
+    partondelay = 3
+    disarmed = 4
+    allonentrydelay = 5
+    partonentrydelay = 6
+    allonexitdelay = 7
+    partonexitdelay = 8
+    alloninstantarmed = 9
 
 
 class BoschComands():
